@@ -13,7 +13,7 @@ This Python script downloads a video from YouTube, extracts its audio, transcrib
 
 1. Clone the repository:
 
-   git clone 
+   git clone https://github.com/deepesh786ja/youtube-app.git
    cd youtube_transcript_project
 Install dependencies:
 

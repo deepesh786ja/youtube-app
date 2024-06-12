@@ -1,0 +1,147 @@
+import sys
+from PIL import ImageFile
+sys.modules['ImageFile'] = ImageFile
+import os
+import re
+import yt_dlp
+import moviepy.editor as mp
+import speech_recognition as sr
+from moviepy.editor import VideoFileClip
+from pydub import AudioSegment
+
+def download_video(url, filename, max_retries=3):
+    ydl_opts = {
+        'outtmpl': filename,
+        'format': 'best',
+    }
+    retries = 0
+    while retries < max_retries:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                return filename
+        except yt_dlp.utils.DownloadError as e:
+            print(f"Error downloading video: {e}. Retrying... (Attempt {retries + 1}/{max_retries})")
+            retries += 1
+    raise Exception("Failed to download video after multiple attempts.")
+
+def get_video_id(url):
+    # Match YouTube Shorts URLs
+    video_id_match = re.search(r"shorts\/(\w+)", url)
+    if video_id_match:
+        return video_id_match.group(1)
+
+    # Match youtube.be shortened URLs
+    video_id_match = re.search(r"youtu\.be\/([\w\-_]+)(\?.*)?", url)
+    if video_id_match:
+        return video_id_match.group(1)
+               
+    # Match regular YouTube URLs
+    video_id_match = re.search(r"v=([\w\-_]+)", url)
+    if video_id_match:
+        return video_id_match.group(1)
+
+    # Match YouTube live stream URLs
+    video_id_match = re.search(r"live\/(\w+)", url)  
+    if video_id_match:
+        return video_id_match.group(1)
+
+    return None
+
+def get_playlist_videos(playlist_url):
+    ydl_opts = {
+        'ignoreerrors': True,
+        'playlistend': 1000,  # Maximum number of videos to fetch
+        'extract_flat': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        playlist_info = ydl.extract_info(playlist_url, download=False)
+        return [entry['url'] for entry in playlist_info['entries']]
+
+def extract_audio(video_file, audio_file):
+    video_clip = VideoFileClip(video_file)
+    audio_clip = video_clip.audio
+    audio_clip.write_audiofile(audio_file)
+    audio_clip.close()
+    video_clip.close()
+
+def transcribe_audio(audio_file, output_file, chunk_length=60000, max_retries=3):
+    r = sr.Recognizer()
+    audio = AudioSegment.from_file(audio_file)
+    total_duration = len(audio)
+    transcript = ""
+
+    for i in range(0, total_duration, chunk_length):
+        audio_chunk = audio[i:i + chunk_length]
+        chunk_file = f"temp_chunk_{i}.wav"
+        audio_chunk.export(chunk_file, format="wav")
+        
+        with sr.AudioFile(chunk_file) as source:
+            audio_data = r.record(source)
+        
+        retries = 0
+        while retries < max_retries:
+            try:
+                text = r.recognize_google(audio_data)
+                transcript += text + " "
+                break
+            except sr.RequestError as e:
+                print(f"Error during transcription: {e}. Retrying... (Attempt {retries + 1}/{max_retries})")
+                retries += 1
+            except sr.UnknownValueError:
+                print("Google Speech Recognition could not understand audio")
+                break
+        
+        os.remove(chunk_file)
+
+    with open(output_file, 'w') as f:
+        f.write(transcript.strip())
+
+def get_video_title(url):
+    ydl_opts = {
+        'skip_download': True,
+        'ignoreerrors': True
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        video_info = ydl.extract_info(url, download=False)
+        title = video_info['title'].replace('/', '-').replace('\\', '-').replace(':', '-').replace('*', '-').replace('?', '-').replace('<', '-').replace('>', '-').replace('|', '-').replace('"', '-').strip('.')
+        return title
+
+def main(url):
+    video_id = get_video_id(url)
+    if video_id:
+        video_file = download_video(url, "video.mp4")
+        if not video_file:
+            return
+        video_title = get_video_title(url)
+        output_txt_name = f"{video_title}.txt"
+        audio_file = "audio.wav"
+
+        extract_audio(video_file, audio_file)
+        transcribe_audio(audio_file, output_txt_name)
+
+        os.remove(video_file)
+        os.remove(audio_file)
+        print(f"Transcript generated: {output_txt_name}")
+    else:
+        video_urls = get_playlist_videos(url)
+        for video_url in video_urls:
+            video_file = download_video(video_url, "video.mp4")
+            if not video_file:
+                continue
+            video_title = get_video_title(video_url)
+            output_txt_name = f"{video_title}.txt"
+            audio_file = "audio.wav"
+
+            extract_audio(video_file, audio_file)
+            transcribe_audio(audio_file, output_txt_name)
+
+            os.remove(video_file)
+            os.remove(audio_file)
+            print(f"Transcript generated: {output_txt_name}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python video_to_transcript.py <url>")
+    else:
+        main(sys.argv[1])
